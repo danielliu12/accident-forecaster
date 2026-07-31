@@ -1,127 +1,113 @@
 """
-Geometry + commuter-flow data (fetched live in Colab; graceful fallbacks).
+County risk model (v2).
 
-- Indiana county polygons: Census/plotly counties GeoJSON, filtered to
-  STATE == "18". Gives real boundaries for the choropleth and centroids
-  computed from the polygons (replacing hand-entered centroids for flows).
-- Commuter origins: Census LODES8 origin-destination files for Indiana
-  (block-level home->work job counts, aggregated to county). The inbound
-  commuter mix of a county is the best public proxy for "where the people
-  driving through it come from." main = both ends in Indiana; aux adds
-  out-of-state residents working in Indiana (rolled up to state level).
+risk(county, hour) = opportunity(county) × exposure(hour-of-week)
+                     × weather_multiplier(county, hour)
+county_score       = Σ_hours risk × incident_boost(county)
+
+Static-tier counties (outside the top DYNAMIC_N) use neutral weather, so
+their score is pure baseline — they can't gain from conditions but remain
+in the allocation.
 """
 from __future__ import annotations
 
-import re
-import sys
-
+import numpy as np
 import pandas as pd
-import requests
 
-GEOJSON_URL = ("https://raw.githubusercontent.com/plotly/datasets/master/"
-               "geojson-counties-fips.json")
-LODES_MAIN = ("https://lehd.ces.census.gov/data/lodes/LODES8/in/od/"
-              "in_od_main_JT00_2022.csv.gz")
-LODES_AUX = ("https://lehd.ces.census.gov/data/lodes/LODES8/in/od/"
-             "in_od_aux_JT00_2022.csv.gz")
-
-NEIGHBOR_STATES = {  # state FIPS -> (label, approx centroid) for flow lines
-    "17": ("Illinois", (40.0, -89.2)), "21": ("Kentucky", (37.5, -85.3)),
-    "39": ("Ohio", (40.3, -82.8)), "26": ("Michigan", (43.3, -84.6)),
-}
-STATE_NAMES = {"17": "Illinois", "21": "Kentucky", "39": "Ohio",
-               "26": "Michigan", "state": "out of state"}
+import config
+from sources import weather_multiplier
 
 
-def _norm(s: str) -> str:
-    return re.sub(r"[^a-z]", "", str(s).lower())
+def hourly_exposure() -> np.ndarray:
+    vec = []
+    for wd in range(7):
+        prof = config.WEEKDAY_HOURLY if wd < 5 else config.WEEKEND_HOURLY
+        vec.extend(prof)
+    v = np.array(vec, dtype=float)
+    return v / v.mean()
 
 
-def fetch_indiana_geojson() -> dict | None:
-    """{'features': [...], 'fips_to_name': {}, 'name_to_fips': {},
-        'centroids': {fips: (lat, lon)}} or None if unreachable."""
-    try:
-        gj = requests.get(GEOJSON_URL, timeout=90).json()
-    except Exception as e:  # noqa: BLE001
-        print(f"[warn] county GeoJSON unavailable ({e}); map falls back "
-              "to geographic circles.", file=sys.stderr)
-        return None
-    feats = [f for f in gj["features"]
-             if f.get("properties", {}).get("STATE") == "18"]
-    fips_to_name, centroids = {}, {}
-    for f in feats:
-        fips = f.get("id") or ("18" + f["properties"]["COUNTY"])
-        f["id"] = fips
-        name = f["properties"].get("NAME", fips)
-        fips_to_name[fips] = name
-        centroids[fips] = _centroid(f["geometry"])
-    return {"features": feats, "fips_to_name": fips_to_name,
-            "name_to_fips": {_norm(v): k for k, v in fips_to_name.items()},
-            "centroids": centroids}
+def score(counties: pd.DataFrame,
+          weather: dict[str, pd.DataFrame],
+          incidents: pd.Series,
+          hours: int = 48,
+          trailing_scores: dict[str, float] | None = None
+          ) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns (county_scores, county_hourly)."""
+    exposure = hourly_exposure()
+    hourly_rows = []
+    horizon, drivers = {}, {}
+    for _, c in counties.iterrows():
+        name = c["county"]
+        wdf = weather.get(name)
+        if c["dynamic"] and wdf is not None:
+            total = 0.0
+            cond_hours: dict[str, int] = {}
+            peak_ts, peak_risk = None, -1.0
+            for ts, row in wdf.iloc[:hours].iterrows():
+                wm = weather_multiplier(row)
+                ex = float(exposure[ts.weekday() * 24 + ts.hour])
+                risk = wm * ex
+                total += risk
+                lab = condition_label(row)
+                if lab:
+                    cond_hours[lab] = cond_hours.get(lab, 0) + 1
+                if risk > peak_risk:
+                    peak_risk, peak_ts = risk, ts
+                hourly_rows.append({
+                    "county": name, "time": ts,
+                    "weather_mult": round(wm, 3), "exposure": round(ex, 3),
+                    "hour_risk": round(risk, 3),
+                })
+            horizon[name] = total
+            cond_txt = ", ".join(f"{v}h {k}" for k, v in sorted(
+                cond_hours.items(), key=lambda x: -x[1])) or "clear/dry"
+            drivers[name] = {
+                "conditions": cond_txt,
+                "peak": peak_ts.strftime("%a %H:00") if peak_ts is not None
+                        else "",
+            }
+        else:
+            horizon[name] = float(hours)  # neutral: mean multiplier 1.0
+
+    out = counties.copy()
+    out["horizon_weather"] = out["county"].map(horizon)
+    out["wx_conditions"] = out["county"].map(
+        lambda n: drivers.get(n, {}).get("conditions", "static tier"))
+    out["wx_peak"] = out["county"].map(
+        lambda n: drivers.get(n, {}).get("peak", ""))
+    out["weather_lift"] = (out["horizon_weather"] / hours).round(3)
+    ev = out["county"].map(incidents).fillna(0)
+    out["active_events"] = ev.astype(int)
+    tr = out["county"].map(trailing_scores or {}).fillna(0.0)
+    out["trailing_weight"] = tr.round(2)
+    out["incident_boost"] = np.minimum(
+        1 + config.INCIDENT_BOOST_PER_EVENT * ev
+        + config.TRAILING_BOOST_PER_POINT * tr,
+        config.INCIDENT_BOOST_CAP)
+    out["risk_score"] = (out["opportunity_score"] * out["horizon_weather"]
+                         * out["incident_boost"])
+    out["risk_score"] = (100 * out["risk_score"]
+                         / out["risk_score"].max()).round(2)
+    out = out.sort_values("risk_score", ascending=False)
+    return out, pd.DataFrame(hourly_rows)
 
 
-def _centroid(geom: dict) -> tuple[float, float]:
-    if geom["type"] == "Polygon":
-        ring = geom["coordinates"][0]
-    else:  # MultiPolygon: use largest ring
-        ring = max((p[0] for p in geom["coordinates"]), key=len)
-    lon = sum(p[0] for p in ring) / len(ring)
-    lat = sum(p[1] for p in ring) / len(ring)
-    return (round(lat, 4), round(lon, 4))
-
-
-def fetch_flows() -> pd.DataFrame | None:
-    """County-level OD: columns w_cty (workplace FIPS, all 18xxx),
-    h_cty (home FIPS, any state), jobs. None if unreachable."""
-    frames = []
-    for url in (LODES_MAIN, LODES_AUX):
-        try:
-            df = pd.read_csv(url, usecols=["w_geocode", "h_geocode", "S000"],
-                             dtype={"w_geocode": str, "h_geocode": str})
-            frames.append(df)
-        except Exception as e:  # noqa: BLE001
-            print(f"[warn] LODES fetch failed for {url.split('/')[-1]} "
-                  f"({e})", file=sys.stderr)
-    if not frames:
-        return None
-    od = pd.concat(frames, ignore_index=True)
-    od["w_cty"] = od["w_geocode"].str[:5]
-    od["h_cty"] = od["h_geocode"].str[:5]
-    return (od.groupby(["w_cty", "h_cty"])["S000"].sum()
-            .rename("jobs").reset_index())
-
-
-def top_origins(flows: pd.DataFrame | None, geo: dict | None,
-                k: int = 6) -> dict:
-    """{workplace_fips: [{label, share, lat, lon(or None)}...]} — the top
-    inbound commuter origins for every Indiana county."""
-    if flows is None:
-        return {}
-    fips_to_name = geo["fips_to_name"] if geo else {}
-    centroids = geo["centroids"] if geo else {}
-    out = {}
-    for w, grp in flows.groupby("w_cty"):
-        total = grp["jobs"].sum()
-        ext = grp[grp["h_cty"] != w].copy()
-        # roll out-of-state homes up to state level
-        ext["origin"] = ext["h_cty"].where(
-            ext["h_cty"].str.startswith("18"), "S" + ext["h_cty"].str[:2])
-        agg = (ext.groupby("origin")["jobs"].sum()
-               .sort_values(ascending=False).head(k))
-        rows = []
-        for origin, jobs in agg.items():
-            if origin.startswith("S"):
-                sf = origin[1:]
-                label, cen = NEIGHBOR_STATES.get(
-                    sf, (STATE_NAMES.get(sf, f"state {sf}"), None))
-            else:
-                label = fips_to_name.get(origin, origin) + " Co."
-                cen = centroids.get(origin)
-            rows.append({
-                "label": label, "share": round(float(jobs / total), 3),
-                "lat": cen[0] if cen else None,
-                "lon": cen[1] if cen else None,
-            })
-        internal = float(grp[grp["h_cty"] == w]["jobs"].sum() / total)
-        out[w] = {"origins": rows, "internal_share": round(internal, 3)}
-    return out
+def condition_label(row) -> str | None:
+    """Human label for the dominant adverse condition in a forecast hour."""
+    rain = row.get("precipitation", 0.0)
+    snow = row.get("snowfall", 0.0)
+    if row.get("freezing_precip_flag", False) or (
+            rain > 0.1 and row.get("temperature_2m", 15) <= 0):
+        return "freezing rain/ice"
+    if snow > 1.0:
+        return "heavy snow"
+    if snow > 0.1:
+        return "snow"
+    if rain > 2.5:
+        return "heavy rain"
+    if rain > 0.1:
+        return "rain"
+    if row.get("visibility", 20000) < 1000:
+        return "fog"
+    return None
