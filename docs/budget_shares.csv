@@ -1,7 +1,7 @@
 metro,static_share,live_risk_share,blended_share,shift_vs_static
-indianapolis,0.5,0.659,0.556,0.056
-fortwayne,0.15,0.092,0.13,-0.02
-nwindiana,0.13,0.099,0.119,-0.011
-southbend,0.1,0.088,0.096,-0.004
-lafayette,0.06,0.039,0.053,-0.007
-evansville,0.06,0.023,0.047,-0.013
+indianapolis,0.5,0.6,0.535,0.035
+fortwayne,0.15,0.106,0.135,-0.015
+nwindiana,0.13,0.107,0.122,-0.008
+southbend,0.1,0.115,0.105,0.005
+lafayette,0.06,0.044,0.054,-0.006
+evansville,0.06,0.028,0.049,-0.011
