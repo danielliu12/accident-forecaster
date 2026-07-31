@@ -1,7 +1,8 @@
 name: Poll incidents + publish live forecast map
 on:
   schedule:
-    - cron: "*/20 * * * *"   # every 20 minutes
+    - cron: "*/20 * * * *"                        # full build: fetch all feeds, rebuild map
+    - cron: "5,10,15,25,30,35,45,50,55 * * * *"   # light 511-only poll between builds
   workflow_dispatch: {}       # also allows manual "Run workflow" button
 permissions:
   contents: write
@@ -16,8 +17,15 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install pandas numpy requests openpyxl
-      - name: Run forecaster (polls 511, updates archive, rebuilds map)
-        run: python run.py --hours 48
+      - name: Run forecaster (full build every 20 min; 511-only poll in between)
+        run: |
+          if [ "${{ github.event.schedule }}" = "*/20 * * * *" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "MODE: full build"
+            python run.py --hours 48
+          else
+            echo "MODE: poll-only (511 -> incident history)"
+            python run.py --poll-only
+          fi
         env:
           HISTORY_PATH: incident_history.json
           TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
@@ -25,8 +33,11 @@ jobs:
         run: |
           mkdir -p docs
           touch docs/.nojekyll
-          cp output/risk_map.html docs/index.html
-          cp output/*.csv docs/
+          if [ -f output/risk_map.html ]; then
+            cp output/risk_map.html docs/index.html
+            cp output/live_markers.json docs/
+            cp output/*.csv docs/
+          fi
       - name: Commit archive + published outputs
         run: |
           git config user.name "forecast-bot"
