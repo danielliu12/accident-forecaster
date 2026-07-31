@@ -20,6 +20,7 @@ jobs:
         run: python run.py --hours 48
         env:
           HISTORY_PATH: incident_history.json
+          TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
       - name: Publish map + CSVs to docs/ (served by GitHub Pages)
         run: |
           mkdir -p docs
