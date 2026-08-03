@@ -6,7 +6,12 @@ on:
                               # itself until the window ends (GitHub drops
                               # high-frequency crons, so we stopped relying
                               # on them for the 5-minute polls)
-  workflow_dispatch: {}       # manual "Run workflow" button
+  workflow_dispatch:          # manual "Run workflow" button
+    inputs:
+      publish_safety:
+        description: "Publish the reviewed public safety drafts (Road Safety Watch + Action Brief)"
+        type: boolean
+        default: false
 permissions:
   contents: write
 concurrency:
@@ -29,6 +34,14 @@ jobs:
           set -e
           git config user.name "forecast-bot"
           git config user.email "bot@users.noreply.github.com"
+          # PUBLISH STEP (manual runs only): promote the drafts that were
+          # ALREADY on the site — i.e. exactly what the reviewer read —
+          # to the public URLs, BEFORE the new build refreshes the drafts.
+          if [ "${{ github.event.inputs.publish_safety }}" = "true" ] && [ -f docs/safety_watch_draft.html ]; then
+            echo "MODE: publishing reviewed public safety pages"
+            cp docs/safety_watch_draft.html docs/safety_watch.html
+            cp docs/action_brief_draft.html docs/action_brief.html || true
+          fi
           echo "MODE: full build"
           python run.py --hours 48
           mkdir -p docs
@@ -37,6 +50,8 @@ jobs:
             cp output/risk_map.html docs/index.html
             cp output/live_markers.json docs/
             cp output/ad_ops.html docs/
+            cp output/safety_watch_draft.html docs/ || true
+            cp output/action_brief_draft.html docs/ || true
             cp output/*.csv docs/
           fi
           git add incident_history.json docs/
