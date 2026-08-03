@@ -1,36 +1,36 @@
 name: Poll incidents + publish live forecast map
 on:
   schedule:
-    - cron: "*/20 * * * *"                        # full build: fetch all feeds, rebuild map
-    - cron: "5,10,15,25,30,35,45,50,55 * * * *"   # light 511-only poll between builds
-  workflow_dispatch: {}       # also allows manual "Run workflow" button
+    - cron: "*/20 * * * *"    # ONE job per 20-min window; it does the full
+                              # build, then keeps polling 511 every 5 min
+                              # itself until the window ends (GitHub drops
+                              # high-frequency crons, so we stopped relying
+                              # on them for the 5-minute polls)
+  workflow_dispatch: {}       # manual "Run workflow" button
 permissions:
   contents: write
 concurrency:
   group: forecast
-  cancel-in-progress: false
+  cancel-in-progress: true    # a new window's job takes over from the old
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 19
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install pandas numpy requests openpyxl
-      - name: Run forecaster (full build every 20 min; 511-only poll in between)
-        run: |
-          if [ "${{ github.event.schedule }}" = "*/20 * * * *" ] || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "MODE: full build"
-            python run.py --hours 48
-          else
-            echo "MODE: poll-only (511 -> incident history)"
-            python run.py --poll-only
-          fi
+      - name: Full build, publish, then 5-minute 511 polls until window end
         env:
           HISTORY_PATH: incident_history.json
           TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
-      - name: Publish map + CSVs to docs/ (served by GitHub Pages)
         run: |
+          set -e
+          git config user.name "forecast-bot"
+          git config user.email "bot@users.noreply.github.com"
+          echo "MODE: full build"
+          python run.py --hours 48
           mkdir -p docs
           touch docs/.nojekyll
           if [ -f output/risk_map.html ]; then
@@ -39,10 +39,17 @@ jobs:
             cp output/ad_ops.html docs/
             cp output/*.csv docs/
           fi
-      - name: Commit archive + published outputs
-        run: |
-          git config user.name "forecast-bot"
-          git config user.email "bot@users.noreply.github.com"
           git add incident_history.json docs/
           git diff --cached --quiet || git commit -m "forecast update $(date -u +%FT%TZ)"
-          git push
+          git pull --rebase origin main || true
+          git push || true
+          START=$(date +%s)
+          while [ $(( $(date +%s) - START )) -lt 900 ]; do
+            sleep 300
+            echo "MODE: poll-only (511 -> incident history)"
+            python run.py --poll-only || true
+            git add incident_history.json
+            git diff --cached --quiet || git commit -m "incident poll $(date -u +%FT%TZ)"
+            git pull --rebase origin main || true
+            git push || true
+          done
