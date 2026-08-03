@@ -36,6 +36,7 @@ jobs:
           if [ -f output/risk_map.html ]; then
             cp output/risk_map.html docs/index.html
             cp output/live_markers.json docs/
+            cp output/ad_ops.html docs/
             cp output/*.csv docs/
           fi
       - name: Commit archive + published outputs
