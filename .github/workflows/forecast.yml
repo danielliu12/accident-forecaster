@@ -2,10 +2,10 @@ name: Poll incidents + publish live forecast map
 on:
   schedule:
     - cron: "*/20 * * * *"    # ONE job per 20-min window; it does the full
-                              # build, then keeps polling 511 every 5 min
+                              # build, then keeps polling 511 every ~3.5 min
                               # itself until the window ends (GitHub drops
                               # high-frequency crons, so we stopped relying
-                              # on them for the 5-minute polls)
+                              # on them for the frequent polls)
   workflow_dispatch:          # manual "Run workflow" button
     inputs:
       publish_safety:
@@ -20,13 +20,15 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 19
+    timeout-minutes: 21       # was 19, which killed the window's last poll
+                              # mid-push; the concurrency group above (not
+                              # this timeout) is what hands over windows
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
       - run: pip install pandas numpy requests openpyxl
-      - name: Full build, publish, then 5-minute 511 polls until window end
+      - name: Full build, publish, then ~3.5-minute 511 polls until window end
         env:
           HISTORY_PATH: incident_history.json
           TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
@@ -35,6 +37,29 @@ jobs:
           set -e
           git config user.name "forecast-bot"
           git config user.email "bot@users.noreply.github.com"
+          # SELF-HEALING SYNC+PUSH. The old inline `git pull --rebase || true`
+          # had a failure mode that silently killed the rest of the window:
+          # one rebase conflict (incident_history.json is single-line JSON,
+          # so ANY concurrent edit conflicts) left the repo wedged mid-rebase
+          # on a detached HEAD, and every later push failed. This function
+          # (1) aborts any half-finished rebase before and after each try,
+          # (2) resolves conflicts in favor of THIS run's files (-X theirs
+          # during a rebase = keep our commit's content; our history is a
+          # superset of what this job knew, and the newest build should own
+          # docs/), and (3) retries with jittered backoff for plain races.
+          sync_push() {
+            for i in 1 2 3; do
+              git rebase --abort 2>/dev/null || true
+              git checkout -- . 2>/dev/null || true
+              if git pull --rebase -X theirs origin main && git push origin HEAD:main; then
+                return 0
+              fi
+              sleep $(( (RANDOM % 15) + 5 ))
+            done
+            git rebase --abort 2>/dev/null || true
+            echo "WARNING: sync_push failed after retries; work is committed locally and the next cycle will retry"
+            return 0
+          }
           # PUBLISH STEP (manual runs only): promote the drafts that were
           # ALREADY on the site — i.e. exactly what the reviewer read —
           # to the public URLs, BEFORE the new build refreshes the drafts.
@@ -59,9 +84,7 @@ jobs:
           fi
           git add incident_history.json docs/
           git diff --cached --quiet || git commit -m "forecast update $(date -u +%FT%TZ)"
-          git checkout -- . || true
-          git pull --rebase origin main || true
-          git push || true
+          sync_push
           # SAFEROUTE DATA BRIDGE: push the freshly exported data files to
           # the saferoute-indiana repo, but ONLY when their content actually
           # changed (hotspots move slowly; avoids redeploy churn on Render).
@@ -91,14 +114,15 @@ jobs:
           else
             echo "SafeRoute bridge skipped (no token secret or no export files)"
           fi
+          # ~3.5-min 511 polls for the rest of the window (was sleep 300 —
+          # tightened per the measured 15-min median crash listing; pending
+          # the 511 ToS review we stay at this deliberately gentle cadence).
           START=$(date +%s)
           while [ $(( $(date +%s) - START )) -lt 900 ]; do
-            sleep 300
+            sleep 210
             echo "MODE: poll-only (511 -> incident history)"
             python run.py --poll-only || true
             git add incident_history.json
             git diff --cached --quiet || git commit -m "incident poll $(date -u +%FT%TZ)"
-            git checkout -- . || true
-            git pull --rebase origin main || true
-            git push || true
+            sync_push
           done
