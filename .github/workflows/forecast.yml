@@ -30,6 +30,7 @@ jobs:
         env:
           HISTORY_PATH: incident_history.json
           TOMTOM_API_KEY: ${{ secrets.TOMTOM_API_KEY }}
+          SAFEROUTE_PUSH_TOKEN: ${{ secrets.SAFEROUTE_PUSH_TOKEN }}
         run: |
           set -e
           git config user.name "forecast-bot"
@@ -58,8 +59,38 @@ jobs:
           fi
           git add incident_history.json docs/
           git diff --cached --quiet || git commit -m "forecast update $(date -u +%FT%TZ)"
+          git checkout -- . || true
           git pull --rebase origin main || true
           git push || true
+          # SAFEROUTE DATA BRIDGE: push the freshly exported data files to
+          # the saferoute-indiana repo, but ONLY when their content actually
+          # changed (hotspots move slowly; avoids redeploy churn on Render).
+          # Skips silently if the token secret is missing/expired or files
+          # weren't produced this build.
+          if [ -n "$SAFEROUTE_PUSH_TOKEN" ] && [ -f output/risk_points.csv ] && [ -f output/coverage_zones.geojson ]; then
+            echo "MODE: SafeRoute data bridge"
+            rm -rf /tmp/saferoute
+            if git clone --depth 1 "https://x-access-token:${SAFEROUTE_PUSH_TOKEN}@github.com/danielliu12/saferoute-indiana.git" /tmp/saferoute 2>/dev/null; then
+              mkdir -p /tmp/saferoute/data
+              cp output/risk_points.csv /tmp/saferoute/data/
+              cp output/coverage_zones.geojson /tmp/saferoute/data/
+              cd /tmp/saferoute
+              git config user.name "forecast-bot"
+              git config user.email "bot@users.noreply.github.com"
+              git add data/risk_points.csv data/coverage_zones.geojson
+              if git diff --cached --quiet; then
+                echo "SafeRoute data unchanged; no push"
+              else
+                git commit -m "SafeRoute data update $(date -u +%FT%TZ)"
+                git push && echo "SafeRoute data pushed; Render will redeploy" || echo "WARNING: SafeRoute push failed (check token permissions/expiry)"
+              fi
+              cd "$GITHUB_WORKSPACE"
+            else
+              echo "WARNING: could not clone saferoute-indiana (token invalid or expired?)"
+            fi
+          else
+            echo "SafeRoute bridge skipped (no token secret or no export files)"
+          fi
           START=$(date +%s)
           while [ $(( $(date +%s) - START )) -lt 900 ]; do
             sleep 300
@@ -67,6 +98,7 @@ jobs:
             python run.py --poll-only || true
             git add incident_history.json
             git diff --cached --quiet || git commit -m "incident poll $(date -u +%FT%TZ)"
+            git checkout -- . || true
             git pull --rebase origin main || true
             git push || true
           done
