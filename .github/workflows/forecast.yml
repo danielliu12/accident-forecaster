@@ -52,6 +52,8 @@ jobs:
             cp output/ad_ops.html docs/
             cp output/safety_watch_draft.html docs/ || true
             cp output/action_brief_draft.html docs/ || true
+            cp output/risk_points.csv docs/ || true
+            cp output/coverage_zones.geojson docs/ || true
             cp output/*.csv docs/
           fi
           git add incident_history.json docs/
