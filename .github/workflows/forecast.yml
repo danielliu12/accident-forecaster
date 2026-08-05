@@ -82,6 +82,7 @@ jobs:
             cp output/coverage_zones.geojson docs/ || true
             cp output/lighting_points.csv docs/ || true
             cp output/work_zones.geojson docs/ || true
+            cp output/weather_hourly.csv docs/ || true
             cp output/*.csv docs/
           fi
           git add incident_history.json docs/
@@ -101,6 +102,7 @@ jobs:
               cp output/coverage_zones.geojson /tmp/saferoute/data/
               cp output/lighting_points.csv /tmp/saferoute/data/ || true
               cp output/work_zones.geojson /tmp/saferoute/data/ || true
+              cp output/weather_hourly.csv /tmp/saferoute/data/ || true
               cd /tmp/saferoute
               git config user.name "forecast-bot"
               git config user.email "bot@users.noreply.github.com"
