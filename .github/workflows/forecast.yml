@@ -80,10 +80,6 @@ jobs:
             cp output/action_brief_draft.html docs/ || true
             cp output/risk_points.csv docs/ || true
             cp output/coverage_zones.geojson docs/ || true
-            cp output/lighting_points.csv docs/ || true
-            cp output/work_zones.geojson docs/ || true
-            cp output/weather_hourly.csv docs/ || true
-            cp output/incidents.geojson docs/ || true
             cp output/*.csv docs/
           fi
           git add incident_history.json docs/
@@ -101,14 +97,10 @@ jobs:
               mkdir -p /tmp/saferoute/data
               cp output/risk_points.csv /tmp/saferoute/data/
               cp output/coverage_zones.geojson /tmp/saferoute/data/
-              cp output/lighting_points.csv /tmp/saferoute/data/ || true
-              cp output/work_zones.geojson /tmp/saferoute/data/ || true
-              cp output/weather_hourly.csv /tmp/saferoute/data/ || true
-              cp output/incidents.geojson /tmp/saferoute/data/ || true
               cd /tmp/saferoute
               git config user.name "forecast-bot"
               git config user.email "bot@users.noreply.github.com"
-              git add data/
+              git add data/risk_points.csv data/coverage_zones.geojson
               if git diff --cached --quiet; then
                 echo "SafeRoute data unchanged; no push"
               else
@@ -122,15 +114,24 @@ jobs:
           else
             echo "SafeRoute bridge skipped (no token secret or no export files)"
           fi
-          # ~3.5-min 511 polls for the rest of the window (was sleep 300 —
-          # tightened per the measured 15-min median crash listing; pending
-          # the 511 ToS review we stay at this deliberately gentle cadence).
+          # ~3.5-min 511 polls for the rest of the window (per the measured
+          # 15-min median crash listing; pending the 511 ToS review we stay
+          # at this deliberately gentle cadence). COMMIT every cycle, but
+          # PUSH only every second cycle + a final flush: branch-based
+          # GitHub Pages rebuilds on EVERY push to main and soft-limits at
+          # ~10 builds/hour — pushing each poll (plus builds) exceeded that
+          # and Pages started skipping deploys (stale site, Aug 6). This
+          # yields 3 pushes per 20-min window = 9 Pages builds/hour.
           START=$(date +%s)
+          N=0
           while [ $(( $(date +%s) - START )) -lt 900 ]; do
             sleep 210
-            echo "MODE: poll-only (511 -> incident history)"
+            N=$(( N + 1 ))
+            echo "MODE: poll-only (511 -> incident history) [cycle $N]"
             python run.py --poll-only || true
             git add incident_history.json
             git diff --cached --quiet || git commit -m "incident poll $(date -u +%FT%TZ)"
-            sync_push
+            if [ $(( N % 2 )) -eq 0 ]; then sync_push; fi
           done
+          # flush any unpushed poll commits before the window ends
+          sync_push
