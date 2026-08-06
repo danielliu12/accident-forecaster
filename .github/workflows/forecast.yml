@@ -1,12 +1,13 @@
 name: Poll incidents + publish live forecast map
+# TRIGGERING: driven EXCLUSIVELY by an external pinger (cron-job.org,
+# every 20 min at :00/:20/:40) hitting the workflow_dispatch API, because
+# GitHub's own cron proved unreliable (dropped overnight windows, Aug 5-6).
+# Do NOT re-add a schedule: trigger here — with cancel-in-progress: true a
+# second trigger source doesn't act as a backup, it fires offset from the
+# pinger and cancels every run mid-window (and the resulting push storm
+# supersedes Pages builds, so the site stops updating; see Aug 6 incident).
 on:
-  schedule:
-    - cron: "*/20 * * * *"    # ONE job per 20-min window; it does the full
-                              # build, then keeps polling 511 every ~3.5 min
-                              # itself until the window ends (GitHub drops
-                              # high-frequency crons, so we stopped relying
-                              # on them for the frequent polls)
-  workflow_dispatch:          # manual "Run workflow" button
+  workflow_dispatch:          # manual "Run workflow" button + the pinger
     inputs:
       publish_safety:
         description: "Publish the reviewed public safety drafts (Road Safety Watch + Action Brief)"
