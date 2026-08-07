@@ -1,2 +1,2 @@
 risk_id,latitude,longitude,radius_meters,risk_score,coverage_score,risk_type,start_time,end_time,label,source_count,updated_at
-arch_415746_-872710,41.5746,-87.271,500,70.8,50,historical,,,Recurring recorded incident activity near I-80 / I-94 / I-80,3,2026-08-07T02:01
+arch_415746_-872710,41.5746,-87.271,500,70.8,50,historical,,,Recurring recorded incident activity near I-80 / I-94 / I-80,3,2026-08-07T02:20
