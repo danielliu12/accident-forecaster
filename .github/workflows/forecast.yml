@@ -77,6 +77,7 @@ jobs:
             cp output/risk_map.html docs/index.html
             cp output/live_markers.json docs/
             cp output/ad_ops.html docs/
+            cp output/corridor_atlas.html docs/ || true
             cp output/safety_watch_draft.html docs/ || true
             cp output/action_brief_draft.html docs/ || true
             cp output/risk_points.csv docs/ || true
